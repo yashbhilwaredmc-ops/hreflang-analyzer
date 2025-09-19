@@ -11,7 +11,7 @@ import io
 
 # Set page configuration
 st.set_page_config(
-    page_title="Professional hreflang Analyzer",
+    page_title="DMC hreflang Analyzer",
     page_icon="🌐",
     layout="wide",
     initial_sidebar_state="expanded"
