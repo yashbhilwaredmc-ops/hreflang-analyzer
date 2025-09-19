@@ -87,7 +87,7 @@ class AdvancedHreflangChecker:
             st.info(f"[{timestamp}] {message}")
     
     def setup_ui(self):
-        st.markdown('<h1 class="main-header">🌐 Professional hreflang Analyzer</h1>', unsafe_allow_html=True)
+        st.markdown('<h1 class="main-header">🌐 DMC hreflang Analyzer</h1>', unsafe_allow_html=True)
         
         # Input section
         with st.expander("Configuration", expanded=True):
