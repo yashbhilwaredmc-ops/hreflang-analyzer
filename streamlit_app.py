@@ -9,16 +9,50 @@ import pycountry
 from fake_useragent import UserAgent
 import re
 
-# Set page configuration
+# Set page configuration with DMC branding
 st.set_page_config(
-    page_title="Professional Hreflang Analyzer",
+    page_title="DMC Href_lang Tool",
     page_icon="🌐",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# App title and description
-st.title("🌐 Professional Hreflang Analyzer")
+# Custom CSS for DMC branding
+st.markdown("""
+<style>
+    .main {
+        background-color: #f0f2f6;
+    }
+    .dmc-header {
+        background-color: #1E3A8A;
+        color: white;
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        margin-bottom: 2rem;
+        text-align: center;
+    }
+    .dmc-header h1 {
+        color: white;
+        margin-bottom: 0.5rem;
+    }
+    .stButton button {
+        background-color: #1E3A8A;
+        color: white;
+    }
+    .sidebar .sidebar-content {
+        background-color: #f8f9fa;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# DMC Header
+st.markdown("""
+<div class="dmc-header">
+    <h1>🌐 DMC Href_lang Tool</h1>
+    <p>Professional hreflang analysis for international SEO</p>
+</div>
+""", unsafe_allow_html=True)
+
 st.markdown("""
 This tool analyzes hreflang tags for international SEO. 
 Hreflang tags tell search engines what language and regional URLs you have for your content, 
@@ -31,182 +65,12 @@ if 'results' not in st.session_state:
 if 'processing' not in st.session_state:
     st.session_state.processing = False
 
-def validate_hreflang(hreflang):
-    """Validate if a hreflang value is properly formatted"""
-    if hreflang == 'x-default':
-        return True
-        
-    parts = hreflang.split('-')
-    if len(parts) > 2:
-        return False        
-            
-    try:
-        if parts[0]:
-            pycountry.languages.get(alpha_2=parts[0])
-        if len(parts) > 1 and parts[1]:
-            pycountry.countries.get(alpha_2=parts[1].upper())
-        return True
-    except:
-        return False
-
-def url_matches(href, base_url):
-    """Check if two URLs match after normalization"""
-    def normalize_url(url):
-        parsed = urlparse(url)
-        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip('/').lower()
-        
-    norm_href = normalize_url(href)
-    norm_base = normalize_url(base_url)
-    return norm_href == norm_base
-
-def check_indexable(soup):
-    """Check if a page is indexable by search engines"""
-    robots = soup.find('meta', attrs={'name': 'robots'})
-    return not (robots and 'noindex' in robots.get('content', '').lower())
-
-def fetch_url(url, method="auto"):
-    """Fetch URL content using specified method"""
-    try:
-        if method in ["auto", "http"]:
-            session = requests.Session()
-            ua = UserAgent()
-            user_agent = ua.chrome
-            headers = {
-                "User-Agent": user_agent,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-                "Referer": "https://www.google.com/"
-            }
-            
-            response = session.get(
-                url,
-                headers=headers,
-                timeout=15,
-                allow_redirects=True,
-                verify=True
-            )
-            
-            response.raise_for_status()
-            
-            # Check if blocked
-            html_content = response.text.lower()
-            is_blocked = (
-                response.status_code == 403 or
-                "access denied" in html_content or
-                "cloudflare" in html_content
-            )
-            
-            if not is_blocked or method == "http":
-                return {
-                    "method": "HTTP",
-                    "url": response.url,
-                    "status": response.status_code,
-                    "html": response.text,
-                    "user_agent": user_agent
-                }
-        
-        # If HTTP failed or we need browser method
-        try:
-            from selenium import webdriver
-            from selenium.webdriver.chrome.options import Options
-            
-            chrome_options = Options()
-            chrome_options.add_argument("--headless")
-            chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            
-            driver = webdriver.Chrome(options=chrome_options)
-            driver.get(url)
-            time.sleep(3)
-            
-            user_agent = driver.execute_script("return navigator.userAgent;")
-                
-            return {
-                "method": "Browser",
-                "url": driver.current_url,
-                "status": 200,
-                "html": driver.page_source,
-                "user_agent": user_agent
-            }
-        except:
-            return None
-            
-    except Exception as e:
-        return None
-
-def process_url(url, method="auto"):
-    """Process a single URL and extract hreflang information"""
-    response = fetch_url(url, method)
-    
-    if not response:
-        return {
-            "URL": url,
-            "Status": "Failed",
-            "Title": "",
-            "Language": "",
-            "Indexable": "❌",
-            "Method": "Failed",
-            "User-Agent": "N/A",
-            "Issues": "Failed to fetch URL",
-            "hreflang 1": "", "URL 1": "",
-            "hreflang 2": "", "URL 2": "",
-            "hreflang 3": "", "URL 3": ""
-        }
-    
-    html = response["html"]
-    method_used = response["method"]
-    user_agent = response["user_agent"]
-    
-    soup = BeautifulSoup(html, 'lxml')
-    title = soup.title.string if soup.title else "No Title"
-    lang = soup.html.get('lang', '-') if soup.html else '-'
-    indexable = "✔️" if check_indexable(soup) else "❌"
-    
-    # Extract hreflang tags
-    hreflang_tags = []
-    issues = []
-    for link in soup.find_all('link', rel='alternate'):
-        hreflang = link.get('hreflang', '').lower()
-        href = urljoin(url, link.get('href', ''))
-        if hreflang and href:
-            hreflang_tags.append((hreflang, href))
-            
-            # Validate hreflang
-            if not validate_hreflang(hreflang):
-                issues.append(f"Invalid hreflang: {hreflang}")
-            if not url_matches(href, url):
-                issues.append(f"URL mismatch: {href}")
-    
-    # Prepare result
-    result = {
-        "URL": url,
-        "Status": f"{response.get('status', '200')} OK",
-        "Title": title,
-        "Language": lang,
-        "Indexable": indexable,
-        "Method": method_used,
-        "User-Agent": user_agent,
-        "Issues": ", ".join(issues) if issues else "Valid"
-    }
-    
-    # Add hreflang pairs (up to 3)
-    for i in range(1, 4):
-        if i <= len(hreflang_tags):
-            result[f"hreflang {i}"] = hreflang_tags[i-1][0]
-            result[f"URL {i}"] = hreflang_tags[i-1][1]
-        else:
-            result[f"hreflang {i}"] = ""
-            result[f"URL {i}"] = ""
-    
-    return result
+# [Keep all your existing functions here: validate_hreflang, url_matches, check_indexable, fetch_url, process_url]
 
 def main():
-    # Sidebar for configuration
+    # Sidebar for configuration with DMC branding
     with st.sidebar:
+        st.image("https://placehold.co/200x60/1E3A8A/FFFFFF/png?text=DMC+Logo", use_column_width=True)
         st.header("Configuration")
         
         analysis_method = st.selectbox(
@@ -325,9 +189,16 @@ def main():
         st.download_button(
             label="Download CSV",
             data=csv,
-            file_name="hreflang_analysis.csv",
+            file_name="dmc_hreflang_analysis.csv",
             mime="text/csv"
         )
+    
+    # DMC Footer
+    st.markdown("---")
+    st.markdown(
+        "<div style='text-align: center; color: #1E3A8A;'><p>DMC Href_lang Tool • Professional SEO Analysis</p></div>", 
+        unsafe_allow_html=True
+    )
 
 if __name__ == "__main__":
     main()
