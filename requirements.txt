@@ -1,8 +1,9 @@
 streamlit
 requests
 beautifulsoup4
+selenium==4.15.0
+fake-useragent==1.4.0
+pycountry==22.3.5
 pandas
-fake-useragent
-pycountry
 lxml
-selenium
+webdriver-manager
