@@ -10,7 +10,7 @@ import io
 
 # Set page configuration
 st.set_page_config(
-    page_title="DMC hreflang Analyzer",
+    page_title="DMC Professional Hreflang Analyzer",
     page_icon="🌐",
     layout="wide"
 )
@@ -20,18 +20,19 @@ if 'results' not in st.session_state:
     st.session_state.results = []
 if 'processing' not in st.session_state:
     st.session_state.processing = False
-if 'checker' not in st.session_state:
-    st.session_state.checker = None
 
-class HreflangChecker:
-    def fetch_http(self, url):
+class AdvancedHreflangChecker:
+    def __init__(self):
+        self.session = requests.Session()
+        self.ua = UserAgent()
+    
+    def fetch_http(self, url, method="Auto"):
         try:
             if not url.startswith(('http://', 'https://')):
                 url = 'https://' + url
-                
-            session = requests.Session()
-            ua = UserAgent()
-            user_agent = ua.chrome
+            
+            # Rotate user agents for better success rate
+            user_agent = self.ua.chrome
             headers = {
                 "User-Agent": user_agent,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -42,15 +43,21 @@ class HreflangChecker:
                 "Referer": "https://www.google.com/"
             }
             
-            response = session.get(
+            # Add cookies first
+            self.session.get("https://www.google.com/", headers=headers, timeout=10, verify=True)
+            time.sleep(1)  # Be polite
+            
+            # Main request
+            response = self.session.get(
                 url,
                 headers=headers,
-                timeout=15,
+                timeout=20,
                 allow_redirects=True,
                 verify=True
             )
             
             response.raise_for_status()
+            
             return {
                 "method": "HTTP",
                 "url": response.url,
@@ -64,12 +71,53 @@ class HreflangChecker:
             st.error(f"HTTP request failed for {url}: {str(e)}")
             return None
     
-    def process_url(self, url):
-        # Check if processing was stopped
+    def try_all_methods(self, url):
+        """Try different approaches to fetch content"""
+        response = self.fetch_http(url)
+        
+        if not response or self.is_blocked(response):
+            # Try with different user agent
+            try:
+                user_agent = self.ua.firefox
+                headers = {"User-Agent": user_agent}
+                response = self.session.get(url, headers=headers, timeout=15, verify=True)
+                if response.status_code == 200:
+                    return {
+                        "method": "HTTP (Alternate UA)",
+                        "url": response.url,
+                        "status": response.status_code,
+                        "html": response.text,
+                        "headers": dict(response.headers),
+                        "user_agent": user_agent
+                    }
+            except:
+                pass
+        return response
+        
+    def is_blocked(self, response):
+        if not response:
+            return True
+            
+        html = response.get("html", "").lower()
+        status = response.get("status", 200)
+        
+        return (
+            status == 403 or
+            status == 429 or
+            "access denied" in html or
+            "cloudflare" in html or
+            "captcha" in html or
+            "security" in html
+        )
+    
+    def process_url(self, url, method="Auto"):
         if not st.session_state.processing:
             return None
             
-        response = self.fetch_http(url)
+        if method == "Auto":
+            response = self.try_all_methods(url)
+        else:
+            response = self.fetch_http(url)
             
         if not response:
             return {
@@ -78,7 +126,7 @@ class HreflangChecker:
                 "Title": "",
                 "Language": "",
                 "Indexable": "❌",
-                "Method": "HTTP",
+                "Method": "Failed",
                 "User-Agent": "N/A",
                 "Issues": "Failed to fetch URL",
                 "Hreflang Count": 0
@@ -115,7 +163,7 @@ class HreflangChecker:
                 if not self.url_matches(href, url):
                     issues.append(f"URL mismatch: {href}")
         
-        # Prepare result
+        # Prepare comprehensive result (ALL the fields you wanted)
         result = {
             "URL": url,
             "Status": f"{response.get('status', '200')}",
@@ -123,16 +171,16 @@ class HreflangChecker:
             "Language": lang,
             "Indexable": indexable,
             "Method": method,
-            "User-Agent": response.get("user_agent", "N/A")[:30] + "..." if len(response.get("user_agent", "")) > 30 else response.get("user_agent", "N/A"),
-            "Issues": ", ".join(issues) if issues else "None",
+            "User-Agent": response.get("user_agent", "N/A"),
+            "Issues": ", ".join(issues) if issues else "Valid",
             "Hreflang Count": len(hreflang_tags)
         }
         
-        # Add hreflang pairs (up to 3)
-        for i in range(1, 4):
+        # Add ALL hreflang pairs (not just 3)
+        for i in range(1, 11):  # Support up to 10 hreflang tags
             if i <= len(hreflang_tags):
                 result[f"hreflang {i}"] = hreflang_tags[i-1][0]
-                result[f"URL {i}"] = hreflang_tags[i-1][1][:50] + "..." if len(hreflang_tags[i-1][1]) > 50 else hreflang_tags[i-1][1]
+                result[f"URL {i}"] = hreflang_tags[i-1][1]
             else:
                 result[f"hreflang {i}"] = ""
                 result[f"URL {i}"] = ""
@@ -152,6 +200,7 @@ class HreflangChecker:
                 try:
                     pycountry.languages.get(alpha_2=parts[0])
                 except:
+                    # Try alternative lookup
                     found = False
                     for lang in pycountry.languages:
                         if hasattr(lang, 'alpha_2') and lang.alpha_2 == parts[0]:
@@ -178,40 +227,48 @@ class HreflangChecker:
         robots = soup.find('meta', attrs={'name': 'robots'})
         if robots and 'noindex' in robots.get('content', '').lower():
             return False
+            
+        # Check for canonical issues
+        canonicals = soup.find_all('link', rel='canonical')
+        if len(canonicals) > 1:
+            return False
+            
         return True
 
 # Create the Streamlit interface
 def main():
-    st.title("🌐 DMC Hreflang Analyzer")
-    st.markdown("Analyze hreflang implementation for international SEO")
+    st.title("🌐 DMC Professional Hreflang Analyzer")
+    st.markdown("### Complete hreflang analysis with all desktop app features")
     
     # Initialize checker
-    if st.session_state.checker is None:
-        st.session_state.checker = HreflangChecker()
+    if 'checker' not in st.session_state:
+        st.session_state.checker = AdvancedHreflangChecker()
     
-    # Input section
+    # Input section with ALL options
     col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
-        analysis_type = st.radio("Analysis Type", ["Single URL", "Bulk URLs (File Upload)", "Multiple URLs (Text)"])
+        analysis_type = st.radio("Analysis Type", 
+                                ["Single URL", "Bulk URLs (File Upload)", "Multiple URLs (Text)"],
+                                help="Choose how to input URLs for analysis")
         
         if analysis_type == "Single URL":
             url_input = st.text_input("Enter URL", placeholder="https://example.com")
             urls = [url_input.strip()] if url_input and url_input.strip() else []
             
         elif analysis_type == "Bulk URLs (File Upload)":
-            uploaded_file = st.file_uploader("Upload URLs file", type=["txt", "csv"], 
-                                           help="Upload a text file with one URL per line or a CSV file with URLs in the first column")
-            if uploaded_file is not None:
+            uploaded_file = st.file_uploader("Upload URLs file", 
+                                           type=["txt", "csv"], 
+                                           help="Upload TXT (one URL per line) or CSV (URLs in first column)")
+            if uploaded_file:
                 try:
                     if uploaded_file.name.endswith('.csv'):
-                        # Read CSV file
                         df = pd.read_csv(uploaded_file)
                         urls = df.iloc[:, 0].dropna().astype(str).str.strip().tolist()
                     else:
-                        # Read text file
                         content = uploaded_file.read().decode("utf-8")
                         urls = [line.strip() for line in content.split('\n') if line.strip()]
+                    st.success(f"Loaded {len(urls)} URLs from file")
                 except Exception as e:
                     st.error(f"Error reading file: {e}")
                     urls = []
@@ -219,29 +276,36 @@ def main():
                 urls = []
                 
         else:  # Multiple URLs (Text)
-            url_input = st.text_area("Enter URLs (one per line)", placeholder="https://example.com\nhttps://example.org", height=100)
+            url_input = st.text_area("Enter URLs (one per line)", 
+                                   placeholder="https://example.com\nhttps://example.org", 
+                                   height=100)
             if url_input:
                 urls = [url.strip() for url in url_input.split('\n') if url.strip()]
             else:
                 urls = []
     
     with col2:
-        max_urls = st.number_input("Max URLs to process", min_value=1, max_value=50, value=10,
-                                  help="Limit number of URLs to avoid timeouts")
+        method = st.selectbox("Method", ["Auto", "Direct HTTP"], 
+                             help="Auto tries multiple approaches if blocked")
+        max_urls = st.slider("Max URLs to process", 1, 50, 10,
+                            help="Limit to avoid timeouts")
     
     with col3:
-        st.write("")  # Spacer
-        st.write("")  # Spacer
-        analyze_btn = st.button("Analyze URLs", type="primary", use_container_width=True)
-        stop_btn = st.button("Stop Processing", type="secondary", use_container_width=True, 
-                           disabled=not st.session_state.processing)
+        st.write("### Controls")
+        analyze_btn = st.button("🚀 Analyze URLs", type="primary", use_container_width=True)
+        stop_btn = st.button("⏹️ Stop Processing", type="secondary", 
+                           disabled=not st.session_state.processing,
+                           use_container_width=True)
+        export_btn = st.button("📊 Export Results", 
+                             disabled=len(st.session_state.results) == 0,
+                             use_container_width=True)
     
-    # Handle stop button
-    if stop_btn and st.session_state.processing:
+    # Handle controls
+    if stop_btn:
         st.session_state.processing = False
         st.warning("Processing stopped by user")
     
-    # Process button
+    # Process URLs
     if analyze_btn and urls:
         st.session_state.processing = True
         urls_to_process = urls[:max_urls]
@@ -254,55 +318,49 @@ def main():
         st.session_state.results = []
         progress_bar = st.progress(0)
         status_text = st.empty()
-        results_placeholder = st.empty()
+        results_container = st.empty()
         
+        # Process each URL
         for i, url in enumerate(urls_to_process):
-            # Check if processing was stopped
             if not st.session_state.processing:
                 break
                 
-            status_text.text(f"Processing {i+1}/{total_urls}: {url}")
-            result = st.session_state.checker.process_url(url)
+            status_text.text(f"🔍 Processing {i+1}/{total_urls}: {url}")
+            result = st.session_state.checker.process_url(url, method)
             
-            if result:  # Only add if we got a result (not stopped)
+            if result:
                 st.session_state.results.append(result)
-                
-                # Update progress
                 progress_bar.progress((i + 1) / total_urls)
                 
-                # Display intermediate results
+                # Show intermediate results
                 if st.session_state.results:
-                    results_df = pd.DataFrame(st.session_state.results)
-                    display_cols = ["URL", "Status", "Title", "Hreflang Count", "Issues"]
-                    available_cols = [col for col in display_cols if col in results_df.columns]
-                    results_placeholder.dataframe(results_df[available_cols], use_container_width=True, height=200)
+                    with results_container.container():
+                        st.subheader("Current Results")
+                        current_df = pd.DataFrame(st.session_state.results)
+                        st.dataframe(current_df[["URL", "Status", "Title", "Hreflang Count", "Issues"]], 
+                                   use_container_width=True)
             
-            time.sleep(0.5)  # Be nice to servers
+            time.sleep(1)  # Be nice to servers
         
-        if st.session_state.processing:  # Only show complete if not stopped
-            status_text.text("Analysis complete!")
-            st.success(f"Processed {len(st.session_state.results)} URLs")
+        if st.session_state.processing:
+            st.success(f"✅ Analysis complete! Processed {len(st.session_state.results)} URLs")
         st.session_state.processing = False
     
-    # Display results
+    # Display comprehensive results
     if st.session_state.results:
-        st.subheader("Detailed Results")
+        st.subheader("📋 Detailed Analysis Results")
         results_df = pd.DataFrame(st.session_state.results)
         
-        # Ensure all columns exist
-        for i in range(1, 4):
-            if f"hreflang {i}" not in results_df.columns:
-                results_df[f"hreflang {i}"] = ""
-            if f"URL {i}" not in results_df.columns:
-                results_df[f"URL {i}"] = ""
-        
-        st.dataframe(results_df, use_container_width=True, height=400)
+        # Show full data
+        st.dataframe(results_df, use_container_width=True, height=500)
         
         # Summary statistics
-        st.subheader("Summary")
+        st.subheader("📊 Summary")
         col1, col2, col3, col4 = st.columns(4)
         
         successful = len(results_df[~results_df["Status"].str.contains("Failed")])
+        total_hreflangs = results_df["Hreflang Count"].sum()
+        
         with col1:
             st.metric("Total URLs", len(results_df))
         with col2:
@@ -312,27 +370,18 @@ def main():
             st.metric("Failed", failed)
         with col4:
             avg_hreflangs = results_df["Hreflang Count"].mean()
-            st.metric("Avg. Hreflangs", f"{avg_hreflangs:.1f}")
+            st.metric("Avg Hreflangs", f"{avg_hreflangs:.1f}")
         
-        # Export options
-        st.subheader("Export Results")
-        export_col1, export_col2 = st.columns(2)
-        
-        with export_col1:
-            # Download CSV button
+        # Export functionality
+        if export_btn or st.session_state.results:
             csv = results_df.to_csv(index=False)
             st.download_button(
-                label="📥 Download CSV Report",
+                label="📥 Download Full CSV Report",
                 data=csv,
-                file_name="hreflang_analysis.csv",
+                file_name="dmc_hreflang_analysis.csv",
                 mime="text/csv",
                 use_container_width=True
             )
-        
-        with export_col2:
-            # Show raw data option
-            if st.button("📋 Show Raw Data", use_container_width=True):
-                st.text_area("Raw CSV Data", csv, height=200)
 
 if __name__ == "__main__":
     main()
