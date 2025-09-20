@@ -9,7 +9,7 @@ import time
 
 # Set page configuration
 st.set_page_config(
-    page_title="Professional hreflang Analyzer",
+    page_title="DMC hreflang Analyzer",
     page_icon="🌐",
     layout="wide"
 )
@@ -173,7 +173,7 @@ class HreflangChecker:
 
 # Create the Streamlit interface
 def main():
-    st.title("🌐 Professional Hreflang Analyzer")
+    st.title("🌐 DMC Hreflang Analyzer")
     st.markdown("Analyze hreflang implementation for international SEO")
     
     # Initialize checker
