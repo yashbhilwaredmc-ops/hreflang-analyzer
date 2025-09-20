@@ -2,14 +2,10 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 from fake_useragent import UserAgent
 import pycountry
-import time
 import pandas as pd
-import re
-from io import StringIO
+import time
 
 # Set page configuration
 st.set_page_config(
@@ -40,33 +36,11 @@ st.markdown("""
 # Initialize session state
 if 'results' not in st.session_state:
     st.session_state.results = []
-if 'checker' not in st.session_state:
-    st.session_state.checker = None
 
 class HreflangChecker:
     def __init__(self):
-        self.driver = None
-        self.setup_selenium()
+        pass
         
-    def setup_selenium(self):
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--remote-debugging-port=9222")
-        
-        # Add additional options for better compatibility
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option('useAutomationExtension', False)
-        
-        try:
-            self.driver = webdriver.Chrome(options=chrome_options)
-            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        except Exception as e:
-            st.error(f"Failed to initialize browser: {str(e)}")
-    
     def fetch_http(self, url):
         try:
             if not url.startswith(('http://', 'https://')):
@@ -79,7 +53,7 @@ class HreflangChecker:
                 "User-Agent": user_agent,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5",
-                "Accept-Encoding": "gzip, deflate, br",
+                "Accept-Encoding": "gzip, deflate",
                 "Connection": "keep-alive",
                 "Upgrade-Insecure-Requests": "1",
                 "Referer": "https://www.google.com/"
@@ -106,44 +80,9 @@ class HreflangChecker:
         except Exception as e:
             st.error(f"HTTP request failed for {url}: {str(e)}")
             return None
-            
-    def fetch_browser(self, url):
-        try:
-            if not url.startswith(('http://', 'https://')):
-                url = 'https://' + url
-                
-            if not self.driver:
-                self.setup_selenium()
-                
-            self.driver.get(url)
-            time.sleep(2)
-            
-            if any(word in self.driver.page_source.lower() for word in ["challenge", "captcha", "cloudflare"]):
-                st.warning("Anti-bot challenge detected")
-                return None
-                
-            user_agent = self.driver.execute_script("return navigator.userAgent;")
-                
-            return {
-                "method": "Browser",
-                "url": self.driver.current_url,
-                "status": 200,
-                "html": self.driver.page_source,
-                "headers": {},
-                "user_agent": user_agent
-            }
-            
-        except Exception as e:
-            st.error(f"Browser automation failed for {url}: {str(e)}")
-            return None
     
-    def process_url(self, url, method="Auto"):
-        if method == "Auto":
-            response = self.try_all_methods(url)
-        elif method == "Direct HTTP":
-            response = self.fetch_http(url)
-        else:
-            response = self.fetch_browser(url)
+    def process_url(self, url):
+        response = self.fetch_http(url)
             
         if not response:
             return {
@@ -152,21 +91,13 @@ class HreflangChecker:
                 "Title": "",
                 "Language": "",
                 "Indexable": "❌",
-                "Method": "Failed",
+                "Method": "HTTP",
                 "User-Agent": "N/A",
                 "Issues": "Failed to fetch URL",
                 "Hreflang Count": 0
             }
             
         return self.process_response(url, response)
-    
-    def try_all_methods(self, url):
-        response = self.fetch_http(url)
-        
-        if not response or self.is_blocked(response):
-            response = self.fetch_browser(url)
-            
-        return response
         
     def is_blocked(self, response):
         if not response:
@@ -180,9 +111,7 @@ class HreflangChecker:
             status == 429 or
             "access denied" in html or
             "cloudflare" in html or
-            "captcha" in html or
-            "bot" in html or
-            "security" in html
+            "captcha" in html
         )
     
     def process_response(self, url, response):
@@ -281,8 +210,6 @@ class HreflangChecker:
         robots = soup.find('meta', attrs={'name': 'robots'})
         if robots and 'noindex' in robots.get('content', '').lower():
             return False
-            
-        # Check for noindex in X-Robots-Tag header
         return True
 
 # Create the Streamlit interface
@@ -291,9 +218,8 @@ def main():
     st.markdown("Analyze hreflang implementation for international SEO")
     
     # Initialize checker
-    if st.session_state.checker is None:
-        with st.spinner("Initializing analyzer..."):
-            st.session_state.checker = HreflangChecker()
+    if 'checker' not in st.session_state:
+        st.session_state.checker = HreflangChecker()
     
     # Input section
     col1, col2 = st.columns([2, 1])
@@ -312,15 +238,11 @@ def main():
                 urls = []
     
     with col2:
-        method = st.selectbox("Method", ["Auto", "Direct HTTP", "Browser Automation"])
-        max_urls = st.number_input("Max URLs to process", min_value=1, max_value=50, value=5, 
+        max_urls = st.number_input("Max URLs to process", min_value=1, max_value=20, value=5, 
                                   help="Limit number of URLs to avoid timeouts")
     
     # Process button
     if st.button("Analyze URLs", type="primary", use_container_width=True) and urls:
-        if not st.session_state.checker or not st.session_state.checker.driver:
-            st.session_state.checker = HreflangChecker()
-            
         # Limit URLs to process
         urls_to_process = urls[:max_urls]
         total_urls = len(urls_to_process)
@@ -337,7 +259,7 @@ def main():
         
         for i, url in enumerate(urls_to_process):
             status_text.text(f"Processing {i+1}/{total_urls}: {url}")
-            result = st.session_state.checker.process_url(url, method)
+            result = st.session_state.checker.process_url(url)
             st.session_state.results.append(result)
             
             # Update progress
@@ -350,6 +272,9 @@ def main():
                 display_cols = ["URL", "Status", "Title", "Hreflang Count", "Issues"]
                 available_cols = [col for col in display_cols if col in results_df.columns]
                 results_placeholder.dataframe(results_df[available_cols], use_container_width=True)
+            
+            # Add a small delay to avoid overwhelming the server
+            time.sleep(1)
         
         status_text.text("Analysis complete!")
         st.success(f"Processed {len(st.session_state.results)} URLs")
