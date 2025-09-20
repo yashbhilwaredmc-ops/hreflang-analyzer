@@ -6,6 +6,7 @@ from fake_useragent import UserAgent
 import pycountry
 import pandas as pd
 import time
+import io
 
 # Set page configuration
 st.set_page_config(
@@ -17,6 +18,10 @@ st.set_page_config(
 # Initialize session state
 if 'results' not in st.session_state:
     st.session_state.results = []
+if 'processing' not in st.session_state:
+    st.session_state.processing = False
+if 'checker' not in st.session_state:
+    st.session_state.checker = None
 
 class HreflangChecker:
     def fetch_http(self, url):
@@ -60,6 +65,10 @@ class HreflangChecker:
             return None
     
     def process_url(self, url):
+        # Check if processing was stopped
+        if not st.session_state.processing:
+            return None
+            
         response = self.fetch_http(url)
             
         if not response:
@@ -177,19 +186,39 @@ def main():
     st.markdown("Analyze hreflang implementation for international SEO")
     
     # Initialize checker
-    if 'checker' not in st.session_state:
+    if st.session_state.checker is None:
         st.session_state.checker = HreflangChecker()
     
     # Input section
-    col1, col2 = st.columns([2, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
-        analysis_type = st.radio("Analysis Type", ["Single URL", "Multiple URLs"])
+        analysis_type = st.radio("Analysis Type", ["Single URL", "Bulk URLs (File Upload)", "Multiple URLs (Text)"])
         
         if analysis_type == "Single URL":
             url_input = st.text_input("Enter URL", placeholder="https://example.com")
             urls = [url_input.strip()] if url_input and url_input.strip() else []
-        else:
+            
+        elif analysis_type == "Bulk URLs (File Upload)":
+            uploaded_file = st.file_uploader("Upload URLs file", type=["txt", "csv"], 
+                                           help="Upload a text file with one URL per line or a CSV file with URLs in the first column")
+            if uploaded_file is not None:
+                try:
+                    if uploaded_file.name.endswith('.csv'):
+                        # Read CSV file
+                        df = pd.read_csv(uploaded_file)
+                        urls = df.iloc[:, 0].dropna().astype(str).str.strip().tolist()
+                    else:
+                        # Read text file
+                        content = uploaded_file.read().decode("utf-8")
+                        urls = [line.strip() for line in content.split('\n') if line.strip()]
+                except Exception as e:
+                    st.error(f"Error reading file: {e}")
+                    urls = []
+            else:
+                urls = []
+                
+        else:  # Multiple URLs (Text)
             url_input = st.text_area("Enter URLs (one per line)", placeholder="https://example.com\nhttps://example.org", height=100)
             if url_input:
                 urls = [url.strip() for url in url_input.split('\n') if url.strip()]
@@ -197,10 +226,24 @@ def main():
                 urls = []
     
     with col2:
-        max_urls = st.number_input("Max URLs to process", min_value=1, max_value=20, value=5)
+        max_urls = st.number_input("Max URLs to process", min_value=1, max_value=50, value=10,
+                                  help="Limit number of URLs to avoid timeouts")
+    
+    with col3:
+        st.write("")  # Spacer
+        st.write("")  # Spacer
+        analyze_btn = st.button("Analyze URLs", type="primary", use_container_width=True)
+        stop_btn = st.button("Stop Processing", type="secondary", use_container_width=True, 
+                           disabled=not st.session_state.processing)
+    
+    # Handle stop button
+    if stop_btn and st.session_state.processing:
+        st.session_state.processing = False
+        st.warning("Processing stopped by user")
     
     # Process button
-    if st.button("Analyze URLs", type="primary") and urls:
+    if analyze_btn and urls:
+        st.session_state.processing = True
         urls_to_process = urls[:max_urls]
         total_urls = len(urls_to_process)
         
@@ -211,20 +254,39 @@ def main():
         st.session_state.results = []
         progress_bar = st.progress(0)
         status_text = st.empty()
+        results_placeholder = st.empty()
         
         for i, url in enumerate(urls_to_process):
+            # Check if processing was stopped
+            if not st.session_state.processing:
+                break
+                
             status_text.text(f"Processing {i+1}/{total_urls}: {url}")
             result = st.session_state.checker.process_url(url)
-            st.session_state.results.append(result)
-            progress_bar.progress((i + 1) / total_urls)
+            
+            if result:  # Only add if we got a result (not stopped)
+                st.session_state.results.append(result)
+                
+                # Update progress
+                progress_bar.progress((i + 1) / total_urls)
+                
+                # Display intermediate results
+                if st.session_state.results:
+                    results_df = pd.DataFrame(st.session_state.results)
+                    display_cols = ["URL", "Status", "Title", "Hreflang Count", "Issues"]
+                    available_cols = [col for col in display_cols if col in results_df.columns]
+                    results_placeholder.dataframe(results_df[available_cols], use_container_width=True, height=200)
+            
             time.sleep(0.5)  # Be nice to servers
         
-        status_text.text("Analysis complete!")
-        st.success(f"Processed {len(st.session_state.results)} URLs")
+        if st.session_state.processing:  # Only show complete if not stopped
+            status_text.text("Analysis complete!")
+            st.success(f"Processed {len(st.session_state.results)} URLs")
+        st.session_state.processing = False
     
     # Display results
     if st.session_state.results:
-        st.subheader("Results")
+        st.subheader("Detailed Results")
         results_df = pd.DataFrame(st.session_state.results)
         
         # Ensure all columns exist
@@ -234,16 +296,43 @@ def main():
             if f"URL {i}" not in results_df.columns:
                 results_df[f"URL {i}"] = ""
         
-        st.dataframe(results_df, use_container_width=True)
+        st.dataframe(results_df, use_container_width=True, height=400)
         
-        # Download button
-        csv = results_df.to_csv(index=False)
-        st.download_button(
-            label="Download CSV",
-            data=csv,
-            file_name="hreflang_analysis.csv",
-            mime="text/csv"
-        )
+        # Summary statistics
+        st.subheader("Summary")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        successful = len(results_df[~results_df["Status"].str.contains("Failed")])
+        with col1:
+            st.metric("Total URLs", len(results_df))
+        with col2:
+            st.metric("Successful", successful)
+        with col3:
+            failed = len(results_df) - successful
+            st.metric("Failed", failed)
+        with col4:
+            avg_hreflangs = results_df["Hreflang Count"].mean()
+            st.metric("Avg. Hreflangs", f"{avg_hreflangs:.1f}")
+        
+        # Export options
+        st.subheader("Export Results")
+        export_col1, export_col2 = st.columns(2)
+        
+        with export_col1:
+            # Download CSV button
+            csv = results_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download CSV Report",
+                data=csv,
+                file_name="hreflang_analysis.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with export_col2:
+            # Show raw data option
+            if st.button("📋 Show Raw Data", use_container_width=True):
+                st.text_area("Raw CSV Data", csv, height=200)
 
 if __name__ == "__main__":
     main()
